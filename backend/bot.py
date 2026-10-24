@@ -18,7 +18,7 @@ import math
 import re
 import time
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ChatAction
 from telegram.error import BadRequest, NetworkError
 from telegram.ext import (
@@ -38,7 +38,8 @@ WELCOME = (
     "മുതലാളി പറഞ്ഞാ മതി, ബാക്കി കിങ്കരൻ നോക്കിക്കോളും 💪\n\n"
     "🧾 Customers: scan the Telegram QR at the shop counter to get your bill here.\n"
     "കടയിലെ QR കോഡ് സ്കാൻ ചെയ്താൽ നിങ്ങളുടെ ബിൽ ഇവിടെ ലഭിക്കും.\n\n"
-    "🎙️ Shopkeeper: send the items as a voice note or text, e.g. \"രണ്ട് കിലോ അരി, ഒരു സോപ്പ്\"."
+    "🎙️ Shopkeeper: send the items as a voice note or text, e.g. \"രണ്ട് കിലോ അരി, ഒരു സോപ്പ്\".\n"
+    "📊 \"ഇന്നത്തെ ആകെ\" / \"sales report\" → today's bills, total and best sellers."
 )
 TRY_AGAIN = (
     "ക്ഷമിക്കണം, ഒരു പിശക് സംഭവിച്ചു. ഒന്നുകൂടി അയക്കാമോ?\n"
@@ -61,6 +62,18 @@ async def send_bill(message, bill):
         filename=f"EasyBill_{bill['bill_id']}.pdf",
         caption=f"{store.SHOP_NAME} · {bill['bill_id']}",
     )
+
+
+async def send_day_summary(message):
+    """The day-end report as text plus a PDF when there is at least one bill."""
+    summary = store.day_summary()
+    await message.reply_text(store.day_summary_text())
+    if summary["bill_count"]:
+        await message.reply_document(
+            document=pdf_gen.build_summary_pdf(summary),
+            filename=f"EasyBill_report_{summary['date']}.pdf",
+            caption=f"📊 {store.SHOP_NAME} · {summary['date']}",
+        )
 
 
 # ---------------------------------------------------------------- Customer
@@ -106,6 +119,9 @@ async def voice_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not items and not phone and bill_parser.is_cancel(transcript):
         await cancel_by_message(update, context)
         return
+    if not items and not phone and bill_parser.is_summary(transcript):
+        await send_day_summary(update.message)
+        return
     await make_bill(update, context, transcript, items, phone, unknown, "🎙️")
 
 
@@ -128,6 +144,9 @@ async def text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     if bill_parser.is_cancel(text):
         await cancel_by_message(update, context)
+        return
+    if bill_parser.is_summary(text):  # "ഇന്നത്തെ ആകെ", "sales report": no Gemini needed
+        await send_day_summary(update.message)
         return
     text_without_phone, phone = bill_parser.split_phone(text)
     if re.search(r"[^\W\d_]", text_without_phone):  # has letters, so maybe items
@@ -291,6 +310,11 @@ async def cancel_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(CANCELLED.format(bill_id=bill_id))
 
 
+async def day_summary_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/summary or /report: today's bills, total and best sellers."""
+    await send_day_summary(update.message)
+
+
 async def cancel_by_message(update, context):
     """The shopkeeper typed or said "cancel" / "വേണ്ട"."""
     bill_id = context.chat_data.get("pending_send")
@@ -353,12 +377,18 @@ async def start_bot():
         .build()
     )
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler(["summary", "report"], day_summary_command))
     app.add_handler(CallbackQueryHandler(cancel_button, pattern=r"^cancel:"))
     app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, voice_note))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_message))
     app.add_error_handler(on_error)
     await app.initialize()
     await app.start()
+    await app.bot.set_my_commands([  # the "/" menu Telegram shows while typing
+        BotCommand("start", "Welcome / get a bill by ID"),
+        BotCommand("summary", "ഇന്നത്തെ കണക്ക് · Today's report"),
+        BotCommand("report", "Same as /summary"),
+    ])
     await app.updater.start_polling(drop_pending_updates=True)
     log.info("Telegram bot @%s is polling.", store.BOT_USERNAME or "?")
     return app

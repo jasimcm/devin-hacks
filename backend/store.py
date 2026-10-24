@@ -133,6 +133,56 @@ def bill_summary(bill):
     return "\n".join(lines)
 
 
+UNIT_LABEL = {"kg": "kg", "litre": "L", "piece": "pc", "packet": "pkt"}
+
+
+def day_summary(day=None):
+    """Aggregate one day's bills (today by default): count, revenue and per-item totals."""
+    day = day or datetime.now().date()
+    with _lock:
+        bills = _load_bills()
+    today = [
+        bill for bill in bills.values()
+        if datetime.fromisoformat(bill["created_at"]).date() == day
+    ]
+    items = {}
+    for bill in today:
+        for line in bill["items"]:
+            entry = items.setdefault(line["item_id"], {
+                "name_en": line["name_en"], "name_ml": line["name_ml"],
+                "unit": line["unit"], "qty": 0, "revenue": 0,
+            })
+            entry["qty"] += line["qty"]
+            entry["revenue"] += line["line_total"]
+    return {
+        "date": day.isoformat(),
+        "bill_count": len(today),
+        "total": round(sum(bill["total"] for bill in today), 2),
+        "delivered": sum(1 for bill in today if bill.get("delivered")),
+        "items": sorted(items.values(), key=lambda entry: entry["revenue"], reverse=True),
+    }
+
+
+def day_summary_text(day=None):
+    """The day-end report as a chat message: bill count, total and best sellers."""
+    summary = day_summary(day)
+    heading = f"📊 {SHOP_NAME} · ഇന്നത്തെ കണക്ക് / Today"
+    if not summary["bill_count"]:
+        return f"{heading}\nഇന്നും ഒരു ബില്ലുമില്ല.\nNo bills yet today."
+    lines = [
+        heading,
+        f"🧾 Bills: {summary['bill_count']} · Total: ₹{summary['total']:.2f}",
+        f"📲 Sent to customers: {summary['delivered']}",
+        "",
+    ]
+    for entry in summary["items"][:10]:
+        unit = UNIT_LABEL.get(entry["unit"], entry["unit"])
+        lines.append(f"• {entry['name_en']} × {entry['qty']:g} {unit} = ₹{entry['revenue']:.2f}")
+    if len(summary["items"]) > 10:
+        lines.append(f"…and {len(summary['items']) - 10} more items")
+    return "\n".join(lines)
+
+
 def _load_bills():
     if not BILLS_FILE.exists():
         return {}

@@ -87,20 +87,36 @@ async def send_text(to, text):
     await post_message(to, {"type": "text", "text": {"body": text, "preview_url": False}})
 
 
-async def send_pdf(to, bill):
-    filename = f"EasyBill_{bill['bill_id']}.pdf"
+async def send_document(to, pdf, filename, caption):
     async with httpx.AsyncClient(timeout=30) as client:
         upload = await client.post(
             f"{GRAPH_URL}/{store.WHATSAPP_PHONE_NUMBER_ID}/media",
             headers=auth_header(),
             data={"messaging_product": "whatsapp", "type": "application/pdf"},
-            files={"file": (filename, pdf_gen.build_pdf(bill), "application/pdf")},
+            files={"file": (filename, pdf, "application/pdf")},
         )
         upload.raise_for_status()
     await post_message(to, {
         "type": "document",
-        "document": {"id": upload.json()["id"], "filename": filename, "caption": f"{store.SHOP_NAME} · {bill['bill_id']}"},
+        "document": {"id": upload.json()["id"], "filename": filename, "caption": caption},
     })
+
+
+async def send_pdf(to, bill):
+    await send_document(
+        to, pdf_gen.build_pdf(bill), f"EasyBill_{bill['bill_id']}.pdf", f"{store.SHOP_NAME} · {bill['bill_id']}"
+    )
+
+
+async def send_day_summary(to):
+    """The day-end report as text plus a PDF when there is at least one bill."""
+    summary = store.day_summary()
+    await send_text(to, store.day_summary_text())
+    if summary["bill_count"]:
+        await send_document(
+            to, pdf_gen.build_summary_pdf(summary),
+            f"EasyBill_report_{summary['date']}.pdf", f"{store.SHOP_NAME} · {summary['date']}",
+        )
 
 
 # ---------------------------------------------------------------- Message handling
@@ -133,6 +149,9 @@ async def handle_message(message):
         if bill_parser.is_greeting(text):  # don't spend a Gemini request on "hi"
             await send_text(sender, HELP.format(shop=store.SHOP_NAME))
             return
+        if bill_parser.is_summary(text):
+            await send_day_summary(sender)
+            return
         transcript = text
         text_without_phone, _ = bill_parser.split_phone(text)
         items, _, _ = await asyncio.to_thread(bill_parser.parse, text_without_phone)
@@ -144,7 +163,10 @@ async def handle_message(message):
         return
 
     if not items:
-        await send_text(sender, NOT_UNDERSTOOD.format(heard=transcript))
+        if bill_parser.is_summary(transcript):  # a voice note asking for the day report
+            await send_day_summary(sender)
+        else:
+            await send_text(sender, NOT_UNDERSTOOD.format(heard=transcript))
         return
 
     lines, total = store.price_items(items)

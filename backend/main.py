@@ -118,6 +118,12 @@ def latest_bill():
     return with_links(bill) if bill else None
 
 
+@app.get("/api/summary")
+def day_summary():
+    """Day-end report: today's bill count, revenue and per-item totals."""
+    return store.day_summary()
+
+
 @app.get("/api/bills/{bill_id}")
 def bill_status(bill_id: str):
     return with_links(find_bill(bill_id))

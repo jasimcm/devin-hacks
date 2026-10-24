@@ -326,6 +326,20 @@ def is_cancel(text):
     return text.strip(" !.").lower() in CANCEL_WORDS
 
 
+# Day-end report asks: "ഇന്നത്തെ ആകെ", "sales report", "today's total", "കണക്ക് കാണിക്കൂ"
+SUMMARY_WORDS = re.compile(
+    r"ആകെ|വിറ്റുവരവ്|കണക്ക്|റിപ്പോർട്ട|റിപോർട്ട|സംഗ്രഹം|\breport\b|\bsummary\b|\bsales\b"
+    r"|\bcollection\b|\btotal\b|day[\s-]?end|\baake\b|\bkanakk\b",
+    re.IGNORECASE,
+)
+
+
+def is_summary(text):
+    """A short ask for the day's report, not a list of items. Capped at 6 words so an
+    "ആകെ"/"total" inside a long order still makes a bill instead of a report."""
+    return len(text.split()) <= 6 and bool(SUMMARY_WORDS.search(text))
+
+
 # An Indian mobile number, optionally with +91 / 0 and spaces or dashes: "98470 12345", "+91-9847012345"
 PHONE = re.compile(r"(?<!\d)(?:\+?91[\s-]?|0)?[6-9](?:[\s-]?\d){9}(?!\d)")
 
