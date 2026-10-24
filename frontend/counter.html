@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="ml">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0b6e4f">
+  <title>Easy Bill Counter</title>
+  <link rel="icon" href="icons/icon-192.png">
+  <link rel="stylesheet" href="style.css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+</head>
+<body class="counter">
+  <header class="topbar">
+    <div>
+      <h1>Easy Bill · Counter</h1>
+      <p id="shop-name" class="shop-name"></p>
+    </div>
+    <a href="./" class="btn btn-light">🎙️ Mic billing<br><small>മൈക്ക് ബിൽ</small></a>
+  </header>
+
+  <main>
+    <!-- Shown until the first bill arrives -->
+    <section id="waiting" class="card counter-waiting">
+      <p class="tagline">“മുതലാളി പറഞ്ഞാ മതി, ബാക്കി കിങ്കരൻ നോക്കിക്കോളും”</p>
+      <h2>Waiting for a bill…<br><small>ബില്ലിനായി കാത്തിരിക്കുന്നു</small></h2>
+      <p id="waiting-help"></p>
+    </section>
+
+    <section id="bill" class="counter-grid hidden">
+      <div class="card">
+        <div class="bill-head">
+          <h2 id="bill-id"></h2>
+          <span id="channel" class="badge"></span>
+        </div>
+        <p id="heard" class="heard"></p>
+        <table class="counter-table">
+          <thead><tr><th>Item / സാധനം</th><th>Qty</th><th>Amount</th></tr></thead>
+          <tbody id="rows"></tbody>
+        </table>
+        <div class="total-row">
+          <span>Total / ആകെ</span>
+          <strong id="total"></strong>
+        </div>
+        <div class="row">
+          <button id="print" class="btn btn-light">🖨️ Print again<br><small>വീണ്ടും പ്രിന്റ്</small></button>
+          <a id="pdf-link" class="btn btn-light" target="_blank" rel="noopener">📄 View PDF<br><small>PDF കാണുക</small></a>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="qr-grid">
+          <div class="qr-card">
+            <h3>Pay with UPI<br><small>UPI വഴി പണം അടയ്ക്കുക</small></h3>
+            <div id="qr-upi" class="qr"></div>
+          </div>
+          <div class="qr-card">
+            <h3 id="customer-qr-title"></h3>
+            <div id="qr-customer" class="qr"></div>
+          </div>
+        </div>
+        <p id="send-status" class="status hidden"></p>
+        <p id="delivery" class="status waiting"></p>
+      </div>
+    </section>
+
+    <p id="error" class="error hidden" role="alert"></p>
+  </main>
+
+  <script src="counter.js"></script>
+</body>
+</html>

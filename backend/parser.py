@@ -1,0 +1,362 @@
+"""Turn a spoken transcript (or a WhatsApp voice note) into [{item_id, qty}].
+
+1. Try Gemini (if GEMINI_API_KEY is set). Gemini only picks item ids and quantities.
+2. If that fails, use the local parser: alias dictionary + number words + fuzzy matching.
+Prices are never decided here; store.price_items() looks them up in inventory.json.
+"""
+import base64
+import json
+import logging
+import re
+
+import httpx
+from rapidfuzz import fuzz, process
+
+import store
+
+log = logging.getLogger("easybill.parser")
+
+# ---------------------------------------------------------------- Gemini
+
+GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+
+RULES = """You are a billing assistant for a small grocery shop in Kerala.
+The shopkeeper says a list of items in Malayalam, English or Manglish.
+Match each item to ONE item_id from the inventory below, but ONLY if it is the same product.
+Never substitute a similar product: sunflower oil is not coconut oil, green chilli (പച്ചമുളക്)
+is not chilli powder, tomato is not potato. Put anything you cannot match in "unknown".
+Quantity is in the item's unit: for kg/litre items convert grams to kg and ml to litre
+("അര"/"half" = 0.5). For piece/packet items the quantity is a whole count; if only a weight
+is said for a packet item, use 1. If no quantity is said, use 1. Never include prices.
+The shopkeeper may also say the customer's phone number: it is never an item quantity.
+Instructions like "send it on WhatsApp", "the number is", "വാട്സാപ്പിൽ അയക്കൂ" are not items:
+leave them out of both "items" and "unknown".
+
+Inventory (item_id | English | Malayalam | unit | aliases):
+"""
+
+TEXT_TASK = """
+Transcript: {transcript}
+
+Reply ONLY with JSON like {{"items": [{{"item_id": "rice", "qty": 2}}], "unknown": ["sunflower oil 1 litre"]}}."""
+
+AUDIO_TASK = """
+The attached audio is the shopkeeper speaking.
+Reply ONLY with JSON like {"transcript": "<the exact words you heard, in the script spoken>",
+"items": [{"item_id": "rice", "qty": 2}], "unknown": ["<items said that are not in the inventory>"],
+"phone": "<the customer's phone number as digits if one was said, else empty>"}.
+Phone numbers: Indian mobiles have exactly 10 digits and start with 6, 7, 8 or 9. Listen to every
+digit in order. Digits may be said one by one, in pairs or groups ("seventy" = 70, "thirty four" = 34,
+"double one" = 11, "triple nine" = 999), in English or in Malayalam (പൂജ്യം 0, ഒന്ന് 1, രണ്ട് 2,
+മൂന്ന് 3, നാല് 4, അഞ്ച് 5, ആറ് 6, ഏഴ് 7, എട്ട് 8, ഒമ്പത് 9). In "transcript", write numbers as digits."""
+
+
+def inventory_text():
+    return "\n".join(
+        f"{i['id']} | {i['name_en']} | {i['name_ml']} | {i['unit']} | {', '.join(i['aliases'])}"
+        for i in store.INVENTORY
+    )
+
+
+def ask_gemini(parts, timeout):
+    """Send prompt parts to Gemini and return the JSON it replies with."""
+    body = {
+        "contents": [{"parts": parts}],
+        "generationConfig": {"temperature": 0, "responseMimeType": "application/json"},
+    }
+    response = httpx.post(
+        GEMINI_URL.format(model=store.GEMINI_MODEL),
+        headers={"x-goog-api-key": store.GEMINI_API_KEY},
+        json=body,
+        timeout=timeout,
+    )
+    response.raise_for_status()
+    return json.loads(response.json()["candidates"][0]["content"]["parts"][0]["text"])
+
+
+def clean_items(data):
+    """Keep only known item ids with a positive quantity. Pieces and packets are whole numbers."""
+    items = []
+    for entry in data:
+        item_id = str(entry.get("item_id", ""))
+        qty = float(entry.get("qty", 0))
+        if item_id not in store.INVENTORY_BY_ID or qty <= 0:
+            continue
+        if store.INVENTORY_BY_ID[item_id]["unit"] in ("piece", "packet"):
+            qty = max(1, round(qty))
+        items.append({"item_id": item_id, "qty": qty})
+    return merge_duplicates(items)
+
+
+def clean_unknown(data):
+    return [str(name).strip() for name in data if str(name).strip()]
+
+
+def rescue_unknown(items, unknown):
+    """Gemini sometimes calls a listed item "unknown". Give each one a second try with the
+    local parser; only what still doesn't match is reported. Drops words like "number"."""
+    still_unknown = []
+    for name in unknown:
+        found = parse_locally(name)
+        if found:
+            items = merge_duplicates(items + found)
+        elif not INSTRUCTION.search(name) and name.lower() not in FILLER_WORDS:
+            still_unknown.append(name)
+    return items, still_unknown
+
+
+# Words that mean "send it to this number", not an item ("send it on WhatsApp", "നമ്പർ")
+INSTRUCTION = re.compile(r"whats\s*app|വാട്സ്?ആ?പ്പ്|send|അയക്ക|number|നമ്പർ|phone|mobile|ഫോൺ", re.IGNORECASE)
+
+
+def parse_with_gemini(transcript):
+    """Returns (items, unknown)."""
+    prompt = RULES + inventory_text() + TEXT_TASK.format(transcript=transcript)
+    data = ask_gemini([{"text": prompt}], timeout=10)
+    return rescue_unknown(clean_items(data.get("items", [])), clean_unknown(data.get("unknown", [])))
+
+
+def parse_audio(audio, mime_type):
+    """Voice note -> (transcript, items, phone, unknown). Gemini listens to the audio directly.
+    If Gemini hears words but finds no items, the local parser tries the transcript."""
+    if not store.GEMINI_API_KEY:
+        raise RuntimeError("Voice notes need GEMINI_API_KEY in .env")
+    parts = [
+        {"inline_data": {"mime_type": mime_type.split(";")[0], "data": base64.b64encode(audio).decode()}},
+        {"text": RULES + inventory_text() + AUDIO_TASK},
+    ]
+    data = ask_gemini(parts, timeout=40)
+    transcript = str(data.get("transcript", "")).strip()
+    text_without_phone, phone_in_text = split_phone(transcript)
+    phone = normalize_phone(str(data.get("phone") or "")) or phone_in_text
+    items, unknown = rescue_unknown(clean_items(data.get("items", [])), clean_unknown(data.get("unknown", [])))
+    if not items and transcript:
+        items = parse_locally(text_without_phone)
+    return transcript, items, phone, unknown
+
+
+# ---------------------------------------------------------------- Local parser
+
+NUMBER_WORDS = {
+    # Malayalam
+    "കാൽ": 0.25, "അര": 0.5, "ഒന്ന്": 1, "ഒന്നു": 1, "ഒരു": 1, "ഒരെണ്ണം": 1, "ഒന്നര": 1.5,
+    "രണ്ട്": 2, "രണ്ടു": 2, "രണ്ടെണ്ണം": 2, "രണ്ടര": 2.5, "മൂന്ന്": 3, "മൂന്നു": 3, "മൂന്നെണ്ണം": 3,
+    "നാല്": 4, "നാലു": 4, "അഞ്ച്": 5, "അഞ്ചു": 5, "ആറ്": 6, "ആറു": 6, "ഏഴ്": 7, "ഏഴു": 7,
+    "എട്ട്": 8, "എട്ടു": 8, "ഒമ്പത്": 9, "ഒൻപത്": 9, "പത്ത്": 10, "പത്തു": 10, "പന്ത്രണ്ട്": 12,
+    "ഇരുപത്": 20, "അമ്പത്": 50, "നൂറ്": 100, "ഇരുനൂറ്": 200, "ഇരുനൂറ്റമ്പത്": 250, "അഞ്ഞൂറ്": 500,
+    # Manglish
+    "kaal": 0.25, "ara": 0.5, "onnu": 1, "oru": 1, "onnara": 1.5, "randu": 2, "rand": 2,
+    "randara": 2.5, "moonnu": 3, "munnu": 3, "naalu": 4, "nalu": 4, "anju": 5, "aaru": 6,
+    "ezhu": 7, "ettu": 8, "ombathu": 9, "pathu": 10,
+    # English
+    "quarter": 0.25, "half": 0.5, "a": 1, "an": 1, "one": 1, "two": 2, "three": 3, "four": 4,
+    "five": 5, "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10, "twelve": 12,
+}
+
+# Unit word -> multiplier applied to the spoken number (grams become kg, ml become litre).
+UNIT_WORDS = {
+    "kg": 1, "kgs": 1, "kilo": 1, "kilos": 1, "kilogram": 1, "kilograms": 1, "കിലോ": 1, "കിലോഗ്രാം": 1,
+    "l": 1, "ltr": 1, "litre": 1, "litres": 1, "liter": 1, "liters": 1, "ലിറ്റർ": 1, "ലിറ്റര്": 1,
+    "g": 0.001, "gm": 0.001, "gms": 0.001, "gram": 0.001, "grams": 0.001, "ഗ്രാം": 0.001,
+    "ml": 0.001, "മില്ലി": 0.001,
+    "dozen": 12, "ഡസൻ": 12,
+}
+
+# Counting words we simply ignore ("രണ്ട് എണ്ണം", "one packet", ...).
+FILLER_WORDS = {
+    "packet", "packets", "pack", "piece", "pieces", "pcs", "pc", "nos", "number", "ennam",
+    "എണ്ണം", "പാക്കറ്റ്", "പായ്ക്കറ്റ്", "കവർ", "cover", "of", "the", "some", "venam", "വേണം",
+}
+
+SEPARATORS = re.compile(r",|;|\n|(?<!\d)\.(?!\d)|\band\b|\bpinne\b|പിന്നെ|ഒപ്പം|\bplus\b", re.IGNORECASE)
+
+
+def ml_conjunctive(word):
+    """Malayalam adds 'ഉം' (and) to words: സോപ്പ് -> സോപ്പും, മുട്ട -> മുട്ടയും, പഴം -> പഴവും."""
+    if not re.search(r"[ഀ-ൿ]", word):
+        return []
+    if word.endswith("്"):
+        return [word[:-1] + "ും"]
+    if word.endswith("ം"):
+        return [word[:-1] + "വും"]
+    if word.endswith("ൽ"):
+        return [word[:-1] + "ലും"]
+    if word.endswith("ൾ"):
+        return [word[:-1] + "ളും"]
+    return [word + "യും", word + "വും"]
+
+
+def build_alias_table():
+    """Map every alias (and its Malayalam 'and' form) to an item id."""
+    table = {}
+    for item in store.INVENTORY:
+        for alias in item["aliases"] + [item["name_en"]]:
+            alias = alias.lower()
+            table[alias] = item["id"]
+            words = alias.split()
+            for form in ml_conjunctive(words[-1]):
+                table[" ".join(words[:-1] + [form])] = item["id"]
+    return table
+
+
+ALIASES = build_alias_table()
+MAX_ALIAS_WORDS = max(len(a.split()) for a in ALIASES)
+
+
+def tokenize(text):
+    text = text.lower().replace("½", " 0.5 ")
+    text = re.sub(r"(\d)([^\d\s.])", r"\1 \2", text)  # "2kg" -> "2 kg"
+    text = re.sub(r"[^\w\s.ഀ-ൿ]", " ", text)
+    return [t.strip(".") for t in text.split() if t.strip(".")]
+
+
+def read_number(token):
+    if re.fullmatch(r"\d+(\.\d+)?", token):
+        return float(token)
+    return NUMBER_WORDS.get(token)
+
+
+def match_item(tokens, i):
+    """Find an item starting at tokens[i]. Returns (item_id, words_used) or (None, 0)."""
+    # 1. Exact alias, longest phrase first ("coconut oil" before "oil").
+    for n in range(min(MAX_ALIAS_WORDS, len(tokens) - i), 0, -1):
+        phrase = " ".join(tokens[i:i + n])
+        if phrase in ALIASES:
+            return ALIASES[phrase], n
+
+    token = tokens[i]
+    if len(token) < 3:
+        return None, 0
+
+    # 2. Malayalam word with a suffix, e.g. "അരിയും" starts with "അരി". Longest alias wins.
+    best = None
+    for alias, item_id in ALIASES.items():
+        stem = alias.rstrip("്")
+        if " " not in alias and len(stem) >= 3 and token.startswith(stem):
+            if best is None or len(stem) > len(best[0]):
+                best = (stem, item_id)
+    if best:
+        return best[1], 1
+
+    # 3. Fuzzy match for spelling/recognition mistakes ("biskut", "panjasaara").
+    if i + 1 < len(tokens):
+        two = token + " " + tokens[i + 1]
+        found = process.extractOne(two, ALIASES.keys(), scorer=fuzz.ratio, score_cutoff=88)
+        if found and " " in found[0]:
+            return ALIASES[found[0]], 2
+    if len(token) >= 4:
+        found = process.extractOne(token, ALIASES.keys(), scorer=fuzz.ratio, score_cutoff=80)
+        if found:
+            return ALIASES[found[0]], 1
+    return None, 0
+
+
+def parse_chunk(tokens):
+    """Read tokens left to right. A number/unit before an item belongs to that item.
+    A number left over at the end belongs to the last item ("rice 2 kg")."""
+    results = []
+    qty, multiplier = None, 1.0
+    last_had_qty = True
+    i = 0
+    while i < len(tokens):
+        token = tokens[i]
+        number = read_number(token)
+        if number is not None:
+            # "ഒന്നര" style is one word, but "1 അര" means 1.5
+            qty = qty + number if (qty is not None and number == 0.5) else number
+            i += 1
+            continue
+        if token in UNIT_WORDS:
+            multiplier = UNIT_WORDS[token]
+            i += 1
+            continue
+        if token in FILLER_WORDS:
+            i += 1
+            continue
+        item_id, used = match_item(tokens, i)
+        if item_id:
+            results.append({"item_id": item_id, "qty": make_qty(item_id, qty, multiplier)})
+            last_had_qty = qty is not None
+            qty, multiplier = None, 1.0
+            i += used
+            continue
+        i += 1
+
+    if results and qty is not None and not last_had_qty:
+        results[-1]["qty"] = make_qty(results[-1]["item_id"], qty, multiplier)
+    return results
+
+
+def make_qty(item_id, qty, multiplier):
+    unit = store.INVENTORY_BY_ID[item_id]["unit"]
+    if qty is None:
+        qty = 1
+    if multiplier < 1 and unit in ("piece", "packet"):
+        return 1  # "250 gram tea powder" -> 1 packet
+    return round(qty * multiplier, 3)
+
+
+def merge_duplicates(items):
+    merged = {}
+    for entry in items:
+        merged[entry["item_id"]] = merged.get(entry["item_id"], 0) + entry["qty"]
+    return [{"item_id": k, "qty": round(v, 3)} for k, v in merged.items()]
+
+
+def parse_locally(transcript):
+    items = []
+    for chunk in SEPARATORS.split(transcript):
+        items.extend(parse_chunk(tokenize(chunk)))
+    return merge_duplicates(items)
+
+
+# ---------------------------------------------------------------- Entry point
+
+GREETINGS = {"hi", "hai", "hello", "hey", "help", "start", "namaskaram", "നമസ്കാരം", "ഹായ്"}
+
+
+def is_greeting(text):
+    return text.strip(" !.").lower() in GREETINGS
+
+
+CANCEL_WORDS = {"cancel", "stop", "no", "don't send", "dont send", "venda", "വേണ്ട", "ക്യാൻസൽ", "നിർത്തൂ", "അയക്കണ്ട"}
+
+
+def is_cancel(text):
+    return text.strip(" !.").lower() in CANCEL_WORDS
+
+
+# An Indian mobile number, optionally with +91 / 0 and spaces or dashes: "98470 12345", "+91-9847012345"
+PHONE = re.compile(r"(?<!\d)(?:\+?91[\s-]?|0)?[6-9](?:[\s-]?\d){9}(?!\d)")
+
+
+def normalize_phone(text):
+    """Return the number as 91XXXXXXXXXX (what wa.me needs), or None if it isn't an Indian mobile."""
+    digits = re.sub(r"\D", "", text)
+    if len(digits) == 12 and digits.startswith("91"):
+        digits = digits[2:]
+    elif len(digits) == 11 and digits.startswith("0"):
+        digits = digits[1:]
+    return "91" + digits if re.fullmatch(r"[6-9]\d{9}", digits) else None
+
+
+def split_phone(text):
+    """Take the customer's phone number out of a message so it isn't read as a quantity.
+    Returns (text without the number, phone or None)."""
+    match = PHONE.search(text)
+    if not match:
+        return text, None
+    return (text[:match.start()] + " " + text[match.end():]).strip(), normalize_phone(match.group())
+
+
+def parse(transcript):
+    """Returns (items, source, unknown). source is "gemini" or "local";
+    unknown lists things said that are not in the price list (Gemini only)."""
+    if store.GEMINI_API_KEY:
+        try:
+            items, unknown = parse_with_gemini(transcript)
+            if items or unknown:
+                return items, "gemini", unknown
+        except Exception as error:  # network, quota, bad JSON... fall back silently
+            log.warning("Gemini failed, using local parser: %s", error)
+    return parse_locally(transcript), "local", []

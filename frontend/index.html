@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="ml">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0b6e4f">
+  <title>Easy Bill</title>
+  <link rel="manifest" href="manifest.json">
+  <link rel="icon" href="icons/icon-192.png">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <link rel="stylesheet" href="style.css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <h1>Easy Bill</h1>
+      <p id="shop-name" class="shop-name"></p>
+    </div>
+    <button id="new-bill" class="btn btn-light">⟲ New Bill<br><small>പുതിയ ബിൽ</small></button>
+  </header>
+
+  <main>
+    <!-- Step 1: speak -->
+    <section id="step-speak" class="card">
+      <div class="lang-toggle" role="group" aria-label="Language">
+        <button class="lang-btn active" data-lang="ml-IN">മലയാളം</button>
+        <button class="lang-btn" data-lang="en-IN">English</button>
+      </div>
+
+      <div class="mic-wrap">
+        <button id="mic" class="mic" aria-label="Start speaking">
+          <svg viewBox="0 0 24 24" width="64" height="64" aria-hidden="true">
+            <path fill="currentColor" d="M12 15a3.5 3.5 0 0 0 3.5-3.5v-6a3.5 3.5 0 1 0-7 0v6A3.5 3.5 0 0 0 12 15Zm6-3.5a1 1 0 1 0-2 0 4 4 0 0 1-8 0 1 1 0 1 0-2 0 6 6 0 0 0 5 5.91V20H8.5a1 1 0 1 0 0 2h7a1 1 0 1 0 0-2H13v-2.59a6 6 0 0 0 5-5.91Z"/>
+          </svg>
+        </button>
+      </div>
+      <p id="mic-status" class="mic-status">Tap the mic and speak the items<br>മൈക്ക് അമർത്തി സാധനങ്ങൾ പറയുക</p>
+
+      <label for="transcript" class="label">Transcript / പറഞ്ഞത്</label>
+      <textarea id="transcript" rows="3" placeholder="ഉദാ: രണ്ട് കിലോ അരി, ഒരു സോപ്പ്, അര ലിറ്റർ പാൽ"></textarea>
+      <p id="no-speech" class="note hidden">Voice input is not supported in this browser. Type the items above.<br>ഈ ബ്രൗസറിൽ ശബ്ദം പ്രവർത്തിക്കില്ല, ടൈപ്പ് ചെയ്യുക.</p>
+
+      <div class="row">
+        <button id="make-bill" class="btn btn-primary">Make Bill<br><small>ബിൽ ഉണ്ടാക്കുക</small></button>
+        <button id="demo" class="btn btn-light">▶ Demo<br><small>ഡെമോ</small></button>
+      </div>
+    </section>
+
+    <!-- Step 2: check and edit the bill -->
+    <section id="step-bill" class="card hidden">
+      <div class="bill-head">
+        <h2>Bill / ബിൽ</h2>
+        <span id="source" class="badge"></span>
+      </div>
+      <div id="bill-items" class="bill-items"></div>
+      <p id="empty-bill" class="note hidden">No items found. Add items below or speak again.<br>സാധനങ്ങൾ കണ്ടെത്തിയില്ല.</p>
+
+      <div class="add-row">
+        <select id="add-select" aria-label="Item to add"></select>
+        <input id="add-qty" type="number" inputmode="decimal" min="0" step="any" value="1" aria-label="Quantity">
+        <button id="add-btn" class="btn btn-light btn-small">+ Add<br><small>ചേർക്കുക</small></button>
+      </div>
+
+      <div class="total-row">
+        <span>Total / ആകെ</span>
+        <strong id="total">₹0.00</strong>
+      </div>
+      <button id="confirm" class="btn btn-primary btn-wide">✔ Confirm<br><small>ഉറപ്പിക്കുക</small></button>
+    </section>
+
+    <!-- Step 3: payment + Telegram QR -->
+    <section id="step-pay" class="card hidden">
+      <p class="pay-total"><span id="pay-bill-id"></span> · <strong id="pay-total"></strong></p>
+      <div class="qr-grid">
+        <div class="qr-card">
+          <h3>Pay with UPI<br><small>UPI വഴി പണം അടയ്ക്കുക</small></h3>
+          <div id="qr-upi" class="qr"></div>
+        </div>
+        <div id="card-whatsapp" class="qr-card hidden">
+          <h3>Get bill on WhatsApp<br><small>വാട്സാപ്പിൽ ബിൽ</small></h3>
+          <div id="qr-whatsapp" class="qr"></div>
+        </div>
+        <div id="card-telegram" class="qr-card">
+          <h3>Get bill on Telegram<br><small>ടെലിഗ്രാമിൽ ബിൽ</small></h3>
+          <div id="qr-telegram" class="qr"></div>
+        </div>
+      </div>
+      <p id="delivery" class="status waiting"></p>
+      <div class="row">
+        <a id="pdf-link" class="btn btn-light" target="_blank" rel="noopener">📄 View PDF<br><small>PDF കാണുക</small></a>
+        <button id="new-bill-2" class="btn btn-primary">⟲ New Bill<br><small>പുതിയ ബിൽ</small></button>
+      </div>
+    </section>
+
+    <p id="error" class="error hidden" role="alert"></p>
+    <p class="footer-link"><a href="counter.html">🖥️ Counter screen (WhatsApp bills) →</a></p>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>

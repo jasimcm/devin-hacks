@@ -1,0 +1,284 @@
+# Easy Bill 🧾🎙️
+
+**Voice billing for small rural shops in Kerala.** Track: *Kill the Busywork*.
+
+> **മുതലാളി പറഞ്ഞാ മതി, ബാക്കി കിങ്കരൻ നോക്കിക്കോളും.**
+> *The boss just says it; Kinkaran (@KINKARANBOT) handles the rest.*
+
+The shopkeeper sends a **Telegram voice note** with the items, in Malayalam or English:
+*"രണ്ട് കിലോ അരി, ഒരു സോപ്പ്, അര ലിറ്റർ പാൽ"*.
+Easy Bill builds the bill using the shop's own price list, shows it on the counter screen with a UPI QR,
+and sends the bill as a PDF on Telegram. No typing and no billing software.
+
+```
+ Shopkeeper's Telegram ──voice note──▶ Telegram servers ◀──long polling── Mac: FastAPI (one Python process)
+                                                                           ├─ Gemini: audio → transcript → item ids + qty
+                                                                           ├─ prices ALWAYS from inventory.json → bills.json
+                                                                           ├─ ReportLab 80mm receipt → Preview / printer
+                                                                           ├─ counter.html: bill + UPI QR + Telegram QR
+                                                                           └─ replies with summary + PDF
+ Customer scans Telegram QR (t.me/<bot>?start=EB-0042) → taps Start → bot sends the PDF
+```
+
+The Mac asks Telegram for new messages ("long polling"), so **no webhook, tunnel or public URL is needed**.
+The Mac only needs internet.
+
+Extras in the same code:
+- **Mic page:** a web page for Android Chrome. Tap the mic, check the bill, confirm. Needs an HTTPS tunnel.
+- **WhatsApp bot:** the same flow on WhatsApp through Meta's Cloud API. More setup; see the end of this file.
+
+## Project layout
+
+```
+easy-bill/
+├── backend/
+│   ├── main.py         FastAPI app: API, serves the screens, starts the Telegram bot, WhatsApp webhook
+│   ├── bot.py          Telegram bot: voice note/text → bill; /start <BillID> → customer gets PDF
+│   ├── parser.py       Gemini (audio and text) + offline fallback parser
+│   ├── pdf_gen.py      80mm receipt PDF with UPI QR
+│   ├── printer.py      Opens the receipt in Preview or prints it (lp)
+│   ├── store.py        Config (.env), inventory, bills.json storage
+│   ├── wa_sender.py    Talks to whatsapp-sender/ for hands-free WhatsApp sending
+│   ├── whatsapp.py     Optional WhatsApp bot (official Cloud API)
+│   └── inventory.json  20 grocery items with Malayalam/English/Manglish aliases
+├── frontend/
+│   ├── counter.html counter.js Counter screen on the Mac (faces the customer)
+│   ├── index.html  app.js      Mic billing page (phone)
+│   └── style.css  manifest.json  sw.js  icons/
+├── whatsapp-sender/    Node + Baileys: sends bills from a linked spare WhatsApp (unofficial)
+├── requirements.txt
+├── .env.example
+├── DEMO.md             2-minute demo script for the judges
+└── README.md
+```
+
+## Setup (about 10 minutes)
+
+### 1. Install
+Needs Python 3.9 or newer.
+
+```bash
+cd easy-bill
+python3 -m venv .venv
+source .venv/bin/activate        # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+cp .env.example .env             # Windows: copy .env.example .env
+```
+
+### 2. Create the Telegram bot (2 min)
+1. In Telegram, open **@BotFather** and send `/newbot`.
+2. Pick a name (e.g. *Sreeja Stores Bill*) and a username ending in `bot` (e.g. `SreejaBillBot`).
+3. Put the token BotFather sends you in `TELEGRAM_BOT_TOKEN`, and the username without `@` in `BOT_USERNAME`.
+
+### 3. Gemini API key (2 min, needed for voice notes)
+1. Go to **https://aistudio.google.com/apikey**, sign in, click **Create API key**.
+2. Put it in `GEMINI_API_KEY`. The default model `gemini-flash-lite-latest` is free and understands audio.
+
+Each voice note uses one free Gemini request; check your daily limit in AI Studio. Typed items still work
+without Gemini, using the offline parser.
+
+### 4. Shop details and printing
+Set `SHOP_NAME`, `SHOP_ADDRESS`, `SHOP_PHONE` and `UPI_VPA` (the UPI ID that receives the money).
+
+`PRINTER` decides what happens to each new bill:
+
+| `PRINTER=` | What happens |
+|---|---|
+| `preview` *(default)* | The 80mm receipt opens in Preview on the Mac. No printer needed. |
+| *(empty)* | Only saved as `backend/printed/EasyBill_EB-0042.pdf` |
+| a printer name | Printed with `lp` (list names with `lpstat -p`) |
+
+### 5. Run
+
+**Everything with one command** (server + Telegram bot, Cloudflare tunnel, WhatsApp sender):
+
+```bash
+./start.sh     # also updates PUBLIC_URL in .env and opens the counter screen
+./stop.sh      # stop everything
+```
+
+It keeps running after you close the Terminal. Logs are in `logs/`.
+To run only the server and bot by hand instead:
+
+```bash
+python backend/main.py
+```
+
+The log should say `Telegram bot @SreejaBillBot is polling.`
+Open **http://localhost:8000/counter.html** on the Mac. Press `Ctrl+Cmd+F` for full screen, and turn it to face the customer.
+
+### 6. Try it
+1. On the shopkeeper's phone, open your bot in Telegram, tap **Start**, and send a voice note:
+   *"രണ്ട് കിലോ അരി, ഒരു സോപ്പ്, അര ലിറ്റർ പാൽ"*.
+2. In about 5–10 seconds the bot replies with what it heard, the bill and the PDF. The receipt opens on the Mac,
+   and the counter screen shows the bill with two QR codes.
+3. The customer scans the **Telegram QR** and taps **Start**. The bot sends them the PDF, and the counter screen
+   shows **✅ Bill sent on Telegram**.
+
+You can also type the items to the bot instead of speaking.
+
+### 7. Send the bill to the customer's WhatsApp (optional)
+Say the customer's number at the end of the voice note:
+*"രണ്ട് കിലോ അരി, ഒരു സോപ്പ്, നമ്പർ 98470 12345"*.
+
+1. The number is never billed as a quantity.
+2. The bot replies with a **📲 Send on WhatsApp to +91 98470 12345** button.
+3. Tapping it opens the shopkeeper's own WhatsApp, in a chat with that customer, with the bill already typed in.
+   Tap send. This is free and works with any number; no Meta setup is needed.
+
+WhatsApp can't attach the PDF this way, so the message includes a link to it. For that link to work,
+run a tunnel and put its URL in `PUBLIC_URL`:
+
+```bash
+cloudflared tunnel --url http://localhost:8000     # copy the https://….trycloudflare.com URL into PUBLIC_URL
+```
+
+Restart the server after changing `.env`. The quick-tunnel URL changes on every restart, so links in old
+messages stop working; ngrok's free fixed domain avoids that.
+
+### 8. Send on WhatsApp automatically, hands-free (spare number)
+With this set up, the shopkeeper doesn't touch the button. The bot sends the PDF to the customer's
+WhatsApp by itself, after a **10-second countdown** so the number can be checked:
+
+```
+Voice note: "2 kg rice, 1 soap, send it on WhatsApp, the number is 7034191969"
+→ Telegram and the counter screen show, in large text:
+     📲 EB-0007 → +91 70341 91969  ·  Sending on WhatsApp in 10 seconds…  [ ✋ Cancel ]
+→ Number right: do nothing. The PDF and summary arrive on the customer's WhatsApp → "✅ Sent".
+→ Number wrong: tap Cancel, or say or type "cancel" / "വേണ്ട". Or just send the right number,
+  which replaces the wrong one and starts a new countdown.
+```
+
+> ⚠️ **This uses Baileys, an unofficial WhatsApp Web library.** It's against WhatsApp's terms, and WhatsApp
+> may ban the linked number. **Link a spare SIM, never the shop's main number.** The official way is the
+> WhatsApp Cloud API with a paid, pre-approved template (see "Extra: WhatsApp bot" below).
+
+Setup (needs Node.js 20 or newer):
+
+```bash
+cd whatsapp-sender
+npm install
+npm start
+```
+
+1. Open **http://localhost:3001** on the Mac. It shows a QR code.
+2. On the spare phone: **WhatsApp → Settings → Linked devices → Link a device**, and scan the QR.
+3. The page changes to **✅ Linked as +91…**. The session is saved in `whatsapp-sender/auth/`, so after a
+   restart you don't need to scan again. To link a different phone, delete that folder.
+
+Keep `npm start` running next to `python backend/main.py`. If the sender isn't running or linked,
+or the number isn't on WhatsApp, the bot falls back to the **📲 Send on WhatsApp** button.
+`AUTO_SEND_SECONDS` in `.env` changes the countdown. The sender only listens on `127.0.0.1`,
+so the tunnel doesn't expose it.
+
+**Ban safety settings** in `.env`. When a limit is reached, the bot falls back to the button and says why.
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `AUTO_SEND` | `on` | `off` = never auto-send; always show the button |
+| `WA_MAX_PER_HOUR` | `10` | Most auto-sends in one hour |
+| `WA_MAX_PER_DAY` | `30` | Most auto-sends in 24 hours |
+| `WA_MIN_GAP_SECONDS` | `20` | The countdown is stretched so two sends are at least this far apart |
+
+If WhatsApp shows the linked phone a temporary ban, stop, set `AUTO_SEND=off`, unlink "Easy Bill" in
+Linked devices, and wait it out.
+
+Why not send from the bot itself?
+- **Telegram:** bots can't message anyone by phone number.
+- **WhatsApp:** a business can only message someone first with a paid, pre-approved template.
+
+Prices and items are in `backend/inventory.json`. Edit them and restart.
+
+## How it works
+
+- **Voice notes:** the bot downloads the `.ogg` voice note and sends it to Gemini together with the inventory.
+  Gemini returns `{"transcript", "items":[{"item_id","qty"}]}`. If Gemini hears words but finds no items,
+  the offline parser tries the transcript.
+- **Typed items:** Gemini first, then the offline parser (`parser.py`). The offline parser understands:
+  - Malayalam number words (അര 0.5, ഒരു 1, ഒന്നര 1.5 … പത്ത് 10), Manglish (*randu, ara*), English and digits
+  - units: kg/കിലോ, litre/ലിറ്റർ, gram/ഗ്രാം, dozen/ഡസൻ
+  - item aliases including "ഉം" forms (*സോപ്പും*)
+  - rapidfuzz fuzzy matching for misspellings
+- **Prices:** always from `inventory.json`, on the server. Gemini never sees or sets prices.
+- **Items not in the price list:** Gemini must only match the same product. It may not turn sunflower oil
+  into coconut oil, for example. Anything it can't match gets a second try with the offline parser, then
+  the bot lists it under **⚠️ Not in price list (not billed)** so the shopkeeper can add it to `inventory.json`.
+  Packet and piece items are always whole numbers.
+- **Getting the bill to the customer:** a Telegram bot can't message someone who hasn't started a chat with it.
+  So the counter screen shows `https://t.me/<bot>?start=EB-0042`. The customer taps **Start**, which sends
+  `/start EB-0042`, and the bot replies with the PDF. The bot also gives the shopkeeper this link to forward.
+- **PDF:** ReportLab, 80mm receipt. Item names are in English because ReportLab can't shape Malayalam text.
+  Malayalam names appear on the screens.
+- **UPI:** `upi://pay?pa=…&pn=…&am=…&cu=INR&tn=EB-0042`. GPay, PhonePe, Paytm and BHIM all read it.
+
+## API
+
+| Method | Path | Body → Response |
+|---|---|---|
+| POST | `/api/parse` | `{transcript}` → `{items:[…], total, source}` |
+| POST | `/api/bills` | `{items:[{item_id,qty}]}` → bill + `upi_link`, `telegram_link`, `whatsapp_link` (also prints) |
+| GET | `/api/bills/latest` | Newest bill, or `null` (used by the counter screen) |
+| GET | `/api/bills/{id}` | Bill with links and `delivered` / `delivered_via` |
+| GET | `/api/bills/{id}/pdf` | The PDF |
+| POST | `/api/bills/{id}/print` | Print again |
+| GET | `/api/inventory`, `/api/config` | Item list; shop name and which features are on |
+| GET | `/share/{id}/{key}` | PDF link used in WhatsApp messages (needs the bill's random key) |
+| GET/POST | `/webhook/whatsapp` | Optional WhatsApp webhook |
+
+Interactive API docs: http://localhost:8000/docs
+
+## Troubleshooting
+
+| Problem | Fix |
+|---|---|
+| Log says `TELEGRAM_BOT_TOKEN not set` | Fill in `.env` and restart. |
+| Bot doesn't reply at all | Only one copy of the server can poll a bot. Stop any other running copy, including on a teammate's laptop. |
+| "Couldn't process the voice note" | Check `GEMINI_API_KEY` and its daily free limit in AI Studio. Typing the items still works. |
+| Counter QR says "Set BOT_USERNAME" | Set `BOT_USERNAME` without `@`, then restart. |
+| Nothing opens or prints | Use `PRINTER=preview`, or copy the exact name from `lpstat -p`. |
+| Want a fresh bill counter | Stop the server and delete `backend/bills.json`. |
+
+## Extra: mic page on an Android phone
+
+The phone mic needs HTTPS, so run a tunnel:
+
+```bash
+brew install cloudflared
+cloudflared tunnel --url http://localhost:8000
+```
+
+Open the `https://….trycloudflare.com` URL in Chrome on the phone and allow the microphone.
+Use Chrome menu ⋮ → **Add to Home screen** to install it. The **▶ Demo** button fills in sample sentences.
+
+## Extra: WhatsApp bot (optional, ≈ 45 min setup)
+
+The same voice-note flow also works on WhatsApp through Meta's WhatsApp Cloud API. It is harder to set up
+than Telegram:
+- Meta's free test number can only message up to 5 phone numbers that you add in the dashboard.
+- It needs a webhook address that never changes.
+- The first access token expires after 24 hours.
+
+1. **Fixed HTTPS address:** sign up at dashboard.ngrok.com, claim your free domain, then run
+   `ngrok http --url=<your-domain>.ngrok-free.app 8000`.
+2. **Meta app:** at developers.facebook.com → **Create app** → use case **Connect with customers through WhatsApp**.
+3. **Copy the settings:** in **WhatsApp → API Setup**, copy the token to `WHATSAPP_TOKEN` and the Phone number ID
+   to `WHATSAPP_PHONE_NUMBER_ID`. Put the test number, digits only, in `WHATSAPP_NUMBER`.
+   Add up to 5 recipient numbers under **To**.
+4. **Webhook:** in **WhatsApp → Configuration → Webhook**, set:
+   - Callback URL: `https://<your-domain>.ngrok-free.app/webhook/whatsapp`
+   - Verify token: the same word as `WHATSAPP_VERIFY_TOKEN`
+
+   Click **Verify and save**, then subscribe to **messages**.
+5. **Signature check (optional):** **App settings → Basic → App secret** → `WHATSAPP_APP_SECRET`.
+6. **Permanent token:** business.facebook.com → Settings → System users → generate a token that never expires,
+   with `whatsapp_business_messaging` and `whatsapp_business_management`.
+
+On WhatsApp the counter screen shows a `wa.me` QR. The customer sends "BILL EB-0042" and gets the PDF.
+
+## Limits of this mockup
+- **Storage:** one shop, one price list, bills in a JSON file.
+- **Who can bill:** anyone who sends items to the bot creates a bill. A real version would only accept the
+  shopkeeper's Telegram account.
+- **Payment:** "Paid via UPI" is printed on the bill, but the app doesn't check that the payment arrived.
+- **Public tunnel:** while a tunnel is running, the whole server is reachable from the internet. Anyone who
+  has the tunnel URL can open bills by number at `/api/bills/EB-0001/pdf`. A real version needs logins.
