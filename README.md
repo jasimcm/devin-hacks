@@ -1,14 +1,24 @@
 # Easy Bill 🧾🎙️
 
-**Voice billing for small rural shops in Kerala.** Track: *Kill the Busywork*.
+**Voice billing for small rural shops in Kerala.**
+Built at the **DevDay Exchange Community Hackathon**, JAIN University, Kochi — 10–11 October 2026.
+Track: *Kill the Busywork*.
 
 > **മുതലാളി പറഞ്ഞാ മതി, ബാക്കി കിങ്കരൻ നോക്കിക്കോളും.**
 > *The boss just says it; Kinkaran (@KINKARANBOT) handles the rest.*
 
-The shopkeeper sends a **Telegram voice note** with the items, in Malayalam or English:
-*"രണ്ട് കിലോ അരി, ഒരു സോപ്പ്, അര ലിറ്റർ പാൽ"*.
-Easy Bill builds the bill using the shop's own price list, shows it on the counter screen with a UPI QR,
-and sends the bill as a PDF on Telegram. No typing and no billing software.
+## Project overview
+
+- **Project name:** Easy Bill
+- **Short description:** A shopkeeper sends a Telegram voice note with the items — in Malayalam,
+  English or Manglish (*"രണ്ട് കിലോ അരി, ഒരു സോപ്പ്, അര ലിറ്റർ പാൽ"*). Easy Bill builds the bill
+  using the shop's own price list, shows it on a counter screen with a UPI QR, and sends the bill
+  as a PDF back on Telegram or WhatsApp. No typing, no billing software, no printer needed.
+- **Team:** Jasim CM ([@jasimcm](https://github.com/jasimcm)) — add teammates here
+- **Working demo:** run `./start.sh`, then follow the 2-minute script in [DEMO.md](DEMO.md)
+- **Technology stack:** Python 3.9+ (FastAPI, uvicorn, python-telegram-bot), Google Gemini API
+  (audio transcription + item matching), ReportLab (PDF), vanilla-JS PWA (counter screen + mic page),
+  optional Node.js 20 + Baileys (hands-free WhatsApp sender)
 
 ```
  Shopkeeper's Telegram ──voice note──▶ Telegram servers ◀──long polling── Mac: FastAPI (one Python process)
@@ -23,9 +33,38 @@ and sends the bill as a PDF on Telegram. No typing and no billing software.
 The Mac asks Telegram for new messages ("long polling"), so **no webhook, tunnel or public URL is needed**.
 The Mac only needs internet.
 
-Extras in the same code:
-- **Mic page:** a web page for Android Chrome. Tap the mic, check the bill, confirm. Needs an HTTPS tunnel.
-- **WhatsApp bot:** the same flow on WhatsApp through Meta's Cloud API. More setup; see the end of this file.
+## Run the project
+
+Prerequisites: Python 3.9+, a Telegram account for the bot, a free Gemini API key. Node.js 20+ only
+for the optional WhatsApp sender.
+
+```bash
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env        # fill in TELEGRAM_BOT_TOKEN, BOT_USERNAME, GEMINI_API_KEY, shop details
+./start.sh                  # server + bot + tunnel + counter screen in one command
+python backend/main.py      # or just the server and bot, by hand
+```
+
+Then open **http://localhost:8000/counter.html** on the Mac and send the bot a voice note.
+Full setup walkthrough (BotFather, Gemini key, printer, WhatsApp): [Setup](#setup-about-10-minutes) below.
+
+## Current status
+
+- **Working features:** Malayalam/English/Manglish voice-note billing; typed input with an offline
+  fallback parser; prices always from `inventory.json` (Gemini never sets a price); 80mm PDF receipts;
+  customer gets the bill via Telegram deep-link QR or WhatsApp (`wa.me` message, or hands-free
+  auto-send through a linked spare number); counter screen with UPI payment QR; web mic page.
+- **Known limitations:** single shop, JSON storage; anyone who finds the bot can bill; UPI payment is
+  not verified; PDF and bill endpoints are unauthenticated (see [Limits](#limits-of-this-mockup)).
+- **Libraries, APIs, datasets:** [FastAPI](https://fastapi.tiangolo.com),
+  [python-telegram-bot](https://python-telegram-bot.org), [Gemini API](https://ai.google.dev),
+  [ReportLab](https://www.reportlab.com), [rapidfuzz](https://github.com/rapidfuzz/RapidFuzz),
+  [QRCode.js](https://github.com/davidshimjs/qrcodejs), [Baileys](https://github.com/WhiskeySockets/Baileys)
+  (unofficial WhatsApp Web), [WhatsApp Cloud API](https://developers.facebook.com/docs/whatsapp).
+
+See [AI_USAGE.md](AI_USAGE.md) for AI assistance and [CHANGELOG.md](CHANGELOG.md) for the development
+record. Submission details: [SUBMISSION.md](SUBMISSION.md).
 
 ## Project layout
 
