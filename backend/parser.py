@@ -116,6 +116,88 @@ def parse_with_gemini(transcript):
     return rescue_unknown(clean_items(data.get("items", [])), clean_unknown(data.get("unknown", [])))
 
 
+ITEM_TASK = """
+This is a photo of a purchase bill or price list for a small shop in Kerala.
+Extract every line item with its per-unit price.
+Reply ONLY with JSON like {"items":[{"name_en":"Bread","name_ml":"ബ്രെഡ്","price":45,"unit":"piece"}]}
+unit is one of kg, litre, piece, packet — use piece if unsure. price is per unit in rupees;
+if a line is a total for a quantity (e.g. 2 kg for 110), divide to get the per-unit price.
+name_ml is the Malayalam name; translate common grocery names, else reuse name_en."""
+
+AUDIO_ITEMS_TASK = """
+The attached audio (or the text below) is the shopkeeper listing NEW stock items with their
+prices, in Malayalam, English or Manglish (e.g. "ബ്രെഡ് 45 രൂപ, സോപ്പ് 40 രൂപ").
+Reply ONLY with JSON like {"items":[{"name_en":"Bread","name_ml":"ബ്രെഡ്","price":45,"unit":"piece"}]}
+unit is one of kg, litre, piece, packet — use piece if unsure. price is per unit in rupees.
+name_ml is the Malayalam name; translate common grocery names, else reuse name_en."""
+
+NEW_ITEM_UNITS = {"kg", "litre", "piece", "packet"}
+
+
+def clean_new_items(data):
+    """Keep only priced rows: a name, a positive price, a known unit. Builds the item id."""
+    items = []
+    for entry in data:
+        name_en = str(entry.get("name_en", "")).strip()
+        try:
+            price = float(entry.get("price", 0) or 0)
+        except (TypeError, ValueError):
+            continue
+        if not name_en or price <= 0:
+            continue
+        item_id = re.sub(r"[^a-z0-9]+", "-", name_en.lower()).strip("-")
+        if not item_id:  # Malayalam-only name
+            item_id = "item-" + base64.urlsafe_b64encode(name_en.encode()).decode().lower().rstrip("=")[:8]
+        unit = str(entry.get("unit", "piece")).lower()
+        items.append({
+            "id": item_id,
+            "name_en": name_en,
+            "name_ml": str(entry.get("name_ml", "")).strip() or name_en,
+            "price": round(price, 2),
+            "unit": unit if unit in NEW_ITEM_UNITS else "piece",
+        })
+    return items
+
+
+def parse_photo(image, mime_type):
+    """Photo of a purchase bill / price list -> [{id, name_en, name_ml, price, unit}]."""
+    parts = [
+        {"inline_data": {"mime_type": mime_type.split(";")[0], "data": base64.b64encode(image).decode()}},
+        {"text": ITEM_TASK},
+    ]
+    data = ask_gemini(parts, timeout=40)
+    return clean_new_items(data.get("items", []))
+
+
+def parse_items_audio(audio, mime_type):
+    """Voice note listing new items with prices -> same shape as parse_photo."""
+    parts = [
+        {"inline_data": {"mime_type": mime_type.split(";")[0], "data": base64.b64encode(audio).decode()}},
+        {"text": AUDIO_ITEMS_TASK},
+    ]
+    data = ask_gemini(parts, timeout=40)
+    return clean_new_items(data.get("items", []))
+
+
+def parse_items_text(text):
+    """Typed "add items bread 45 piece, soap 40" -> same shape as parse_photo."""
+    data = ask_gemini([{"text": AUDIO_ITEMS_TASK + "\n\nText: " + text}], timeout=15)
+    return clean_new_items(data.get("items", []))
+
+
+# "add items", "new items", "പുതിയ സാധനം ചേർക്കൂ", "സാധനങ്ങൾ എഴുതി വെക്കൂ", "price list"
+ADD_ITEMS = re.compile(
+    r"^/?add\b|\bnew items?\b|\bprice[\s-]?list\b|\bstock\b|"
+    r"സാധന\w*\s*ചേർ|സാധന\w*\s*എഴുതി|പുതിയ\s*സാധന|പുതിയ\s*സ്റ്റോക്ക്|വില\w*\s*ചേർ",
+    re.IGNORECASE,
+)
+
+
+def is_add_items(text):
+    """"പുതിയ സാധനങ്ങൾ ചേർക്കൂ" / "add items" — new stock for the price list, not a bill."""
+    return bool(ADD_ITEMS.search(text.strip()))
+
+
 def parse_audio(audio, mime_type):
     """Voice note -> (transcript, items, phone, unknown). Gemini listens to the audio directly.
     If Gemini hears words but finds no items, the local parser tries the transcript."""

@@ -99,6 +99,98 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ---------------------------------------------------------------- Shopkeeper
 
+def items_preview(items):
+    """What the photo/voice note was read as, before anything is added to the price list."""
+    rows = ["📋 Found these items — check them:", ""]
+    for item in items:
+        old = store.INVENTORY_BY_ID.get(item["id"])
+        tag = f" (was ₹{old['price']:g})" if old else " 🆕"
+        rows.append(f"• {item['name_en']} / {item['name_ml']} — ₹{item['price']:g} per {item['unit']}{tag}")
+    return "\n".join(rows)
+
+
+async def offer_items(message, context, items):
+    """Preview extracted items and let the shopkeeper confirm before they hit inventory."""
+    context.chat_data["pending_items"] = items
+    await message.reply_text(
+        items_preview(items) + "\n\nശരിയാണോ? Add them to the price list?",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("✅ Add all", callback_data="confirm:items"),
+            InlineKeyboardButton("✋ Cancel", callback_data="discard:items"),
+        ]]),
+    )
+
+
+async def confirm_items(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    items = context.chat_data.pop("pending_items", None)
+    await query.answer()
+    if not items:
+        await query.edit_message_text("Nothing to add — send the photo or list again.")
+        return
+    added, updated = [], []
+    for entry in items:
+        item, existed = store.add_item(entry)
+        (updated if existed else added).append(item["name_en"])
+    # the offline parser must see the new names right away, before the next bill
+    bill_parser.ALIASES = bill_parser.build_alias_table()
+    bill_parser.MAX_ALIAS_WORDS = max(len(a.split()) for a in bill_parser.ALIASES)
+    done = ", ".join(added + [f"{name} (price updated)" for name in updated])
+    log.info("Price list updated: %s", done)
+    await query.edit_message_text(f"✅ Price list updated: {done}\nYou can bill them right away.")
+
+
+async def discard_items(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    context.chat_data.pop("pending_items", None)
+    await query.answer("Cancelled")
+    await query.edit_message_text("✋ Cancelled. Nothing was added.")
+
+
+async def photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """A photo of a purchase bill / price list -> extract items -> confirm -> inventory."""
+    await update.message.chat.send_action(ChatAction.TYPING)
+    try:
+        file = await update.message.photo[-1].get_file()  # largest size
+        data = bytes(await file.download_as_bytearray())
+        items = await asyncio.to_thread(bill_parser.parse_photo, data, "image/jpeg")
+    except Exception as error:
+        log.error("Bill photo failed: %s", error)
+        await update.message.reply_text(TRY_AGAIN)
+        return
+    if not items:
+        await update.message.reply_text(
+            "ഫോട്ടോയിൽ സാധനങ്ങളും വിലയും കണ്ടെത്താനായില്ല.\n"
+            "Couldn't read items and prices from that photo. Try a clearer one."
+        )
+        return
+    await offer_items(update.message, context, items)
+
+
+async def add_items_text(update, context, text):
+    """Typed "add items: bread 45 piece, soap 40" — or /add with the same text."""
+    if not store.GEMINI_API_KEY:
+        await update.message.reply_text("Adding items needs GEMINI_API_KEY (to read the list).")
+        return
+    try:
+        items = await asyncio.to_thread(bill_parser.parse_items_text, text)
+    except Exception as error:
+        log.error("Item list parse failed: %s", error)
+        await update.message.reply_text(TRY_AGAIN)
+        return
+    if not items:
+        await update.message.reply_text(
+            "സാധനങ്ങളും വിലയും മനസ്സിലായില്ല.\n"
+            "I need items with prices, e.g. \"add items bread 45 piece, soap 40\" — or send a photo of the bill."
+        )
+        return
+    await offer_items(update.message, context, items)
+
+
+async def add_items_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await add_items_text(update, context, " ".join(context.args))
+
+
 async def voice_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
     audio = update.message.voice or update.message.audio
     await update.message.reply_text("🎙️ കേൾക്കുന്നു… Listening…")
@@ -124,6 +216,23 @@ async def voice_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     if not items and not phone and bill_parser.is_summary(transcript):
         await send_day_summary(update.message)
+        return
+    if not items and not phone and bill_parser.is_add_items(transcript):
+        try:  # re-listen to the same audio with the stock-list prompt
+            new_items = await asyncio.to_thread(
+                bill_parser.parse_items_audio, data, audio.mime_type or "audio/ogg"
+            )
+        except Exception as error:
+            log.error("Stock voice note failed: %s", error)
+            await update.message.reply_text(TRY_AGAIN)
+            return
+        if new_items:
+            await offer_items(update.message, context, new_items)
+        else:
+            await update.message.reply_text(
+                "സാധനങ്ങളും വിലയും മനസ്സിലായില്ല.\n"
+                "Say the items with prices, e.g. \"bread 45 rupees, soap 40\" — or send a photo of the bill."
+            )
         return
     await make_bill(update, context, transcript, items, phone, unknown, "🎙️")
 
@@ -153,6 +262,9 @@ async def text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     if bill_parser.is_summary(text):  # "ഇന്നത്തെ ആകെ", "sales report": no Gemini needed
         await send_day_summary(update.message)
+        return
+    if bill_parser.is_add_items(text):  # "add items bread 45 piece" / "പുതിയ സാധനം ചേർക്കൂ"
+        await add_items_text(update, context, text)
         return
     text_without_phone, phone = bill_parser.split_phone(text)
     if re.search(r"[^\W\d_]", text_without_phone):  # has letters, so maybe items
@@ -496,9 +608,13 @@ async def start_bot():
     )
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler(["summary", "report"], day_summary_command))
+    app.add_handler(CommandHandler("add", add_items_command))
     app.add_handler(CallbackQueryHandler(cancel_button, pattern=r"^cancel:"))
     app.add_handler(CallbackQueryHandler(confirm_button, pattern=r"^confirm:bill$"))
     app.add_handler(CallbackQueryHandler(discard_button, pattern=r"^discard:bill$"))
+    app.add_handler(CallbackQueryHandler(confirm_items, pattern=r"^confirm:items$"))
+    app.add_handler(CallbackQueryHandler(discard_items, pattern=r"^discard:items$"))
+    app.add_handler(MessageHandler(filters.PHOTO, photo))
     app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, voice_note))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_message))
     app.add_error_handler(on_error)
@@ -508,6 +624,7 @@ async def start_bot():
         BotCommand("start", "Welcome / get a bill by ID"),
         BotCommand("summary", "ഇന്നത്തെ കണക്ക് · Today's report"),
         BotCommand("report", "Same as /summary"),
+        BotCommand("add", "Add items: /add bread 45 piece, soap 40"),
     ])
     await app.updater.start_polling(drop_pending_updates=True)
     log.info("Telegram bot @%s is polling.", store.BOT_USERNAME or "?")
