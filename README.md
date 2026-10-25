@@ -1,7 +1,7 @@
 # Easy Bill 🧾🎙️
 
 **Voice billing for small rural shops in Kerala.**
-Built at the **DevDay Exchange Community Hackathon**, JAIN University, Kochi — 10–11 October 2026.
+Built at the **Devin Hackathon**, JAIN University, Kochi — 24–25 October 2026.
 Track: *Kill the Busywork*.
 
 > **മുതലാളി പറഞ്ഞാ മതി, ബാക്കി കിങ്കരൻ നോക്കിക്കോളും.**
