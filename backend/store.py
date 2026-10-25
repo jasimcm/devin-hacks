@@ -39,6 +39,9 @@ WHATSAPP_APP_SECRET = env("WHATSAPP_APP_SECRET")
 WHATSAPP_API_VERSION = env("WHATSAPP_API_VERSION", "v23.0")
 
 PRINTER = env("PRINTER")
+# "receipt" = the 80mm-wide page itself (thermal printer). "a4" = the receipt at native size,
+# centred on an A4 sheet, sent with -o media=A4 so CUPS can't scale it up.
+PRINT_PAPER = env("PRINT_PAPER", "a4").lower()
 
 # WhatsApp sender (whatsapp-sender/, Node) and the seconds to wait before it sends, so the
 # shopkeeper can check the number and cancel

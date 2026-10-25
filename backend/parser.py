@@ -326,6 +326,20 @@ def is_cancel(text):
     return text.strip(" !.").lower() in CANCEL_WORDS
 
 
+CONFIRM_WORDS = {
+    "ok", "okay", "yes", "correct", "confirm", "sure", "done",
+    "sheri", "sari", "shari", "seri", "aanu", "aan", "aakoo", "cheyyu", "cheyya",
+    "ശരി", "ശെരി", "ശരിയാണ്", "ആണ്", "ആണല്ലോ", "ആ", "ആക്കൂ", "ആക്ക്", "ചെയ്യൂ", "തന്നെ",
+}
+
+
+def is_confirm(text):
+    """"ശരി" / "ശരി ആണ്" / "ok" — confirms the open bill draft. Every word must be a
+    confirmation word (max 3), so "ശരി, അരി രണ്ട് കിലോ" still starts a new draft."""
+    words = text.strip(" !.").lower().split()
+    return 0 < len(words) <= 3 and all(word in CONFIRM_WORDS for word in words)
+
+
 # Day-end report asks: "ഇന്നത്തെ ആകെ", "sales report", "today's total", "കണക്ക് കാണിക്കൂ"
 SUMMARY_WORDS = re.compile(
     r"ആകെ|വിറ്റുവരവ്|കണക്ക്|റിപ്പോർട്ട|റിപോർട്ട|സംഗ്രഹം|\breport\b|\bsummary\b|\bsales\b"
@@ -338,6 +352,31 @@ def is_summary(text):
     """A short ask for the day's report, not a list of items. Capped at 6 words so an
     "ആകെ"/"total" inside a long order still makes a bill instead of a report."""
     return len(text.split()) <= 6 and bool(SUMMARY_WORDS.search(text))
+
+
+def wants_whatsapp(text):
+    """A short ask to (re)send a bill on WhatsApp: "whatsapp-il ayakkoo", "send it on whatsapp".
+    Checked only when no items were found, so "2 kg rice, send on whatsapp" still makes a bill."""
+    return len(text.split()) <= 8 and bool(INSTRUCTION.search(text))
+
+
+# "ഇതൊന്ന് print ചെയ്യൂ" / "print the bill" / "EB-0013 print cheyyu" — reprint a bill
+PRINT_WORDS = re.compile(r"\bprint\b|\breprint\b|പ്രിന്റ്|പ്രിൻറ്|അച്ചടി|പ്രിന്റടിക്കൂ", re.IGNORECASE)
+
+
+def wants_print(text):
+    """A short ask to print a bill again. Checked only when no items were found."""
+    return len(text.split()) <= 6 and bool(PRINT_WORDS.search(text))
+
+
+# A bill id said or typed later: "send EB-0042 to WhatsApp" (also "eb 0042", "EB42")
+BILL_ID = re.compile(r"\be\s*b[\s.-]?0*(\d+)\b", re.IGNORECASE)
+
+
+def bill_id_in(text):
+    """The bill id mentioned in a message, normalised to EB-0042, or None."""
+    match = BILL_ID.search(text)
+    return f"EB-{int(match.group(1)):04d}" if match else None
 
 
 # An Indian mobile number, optionally with +91 / 0 and spaces or dashes: "98470 12345", "+91-9847012345"

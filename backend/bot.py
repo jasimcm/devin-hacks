@@ -119,6 +119,9 @@ async def voice_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not items and not phone and bill_parser.is_cancel(transcript):
         await cancel_by_message(update, context)
         return
+    if not items and not phone and bill_parser.is_confirm(transcript):
+        await confirm_by_message(update, context)
+        return
     if not items and not phone and bill_parser.is_summary(transcript):
         await send_day_summary(update.message)
         return
@@ -145,6 +148,9 @@ async def text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if bill_parser.is_cancel(text):
         await cancel_by_message(update, context)
         return
+    if bill_parser.is_confirm(text):  # "ശരി" / "ok" confirms the open draft
+        await confirm_by_message(update, context)
+        return
     if bill_parser.is_summary(text):  # "ഇന്നത്തെ ആകെ", "sales report": no Gemini needed
         await send_day_summary(update.message)
         return
@@ -162,21 +168,58 @@ async def make_bill(update, context, transcript, items, phone, unknown, icon):
         not_in_list = "\n\n⚠️ വിലവിവരപ്പട്ടികയിൽ ഇല്ല / Not in price list (not billed):\n• " + "\n• ".join(unknown)
     if not items:
         digits = re.sub(r"\D", "", transcript)
-        if phone:  # just a number: it belongs to the last bill
-            await attach_phone(update, context, phone)
+        bill_id = bill_parser.bill_id_in(transcript)
+        if phone and bill_id is None and context.chat_data.get("pending_draft"):  # number for the open draft
+            context.chat_data["pending_draft"]["customer_phone"] = phone
+            await update.message.reply_text(
+                f"📲 Noted {store.format_phone(phone)} for this bill. Tap ✅ OK to make it."
+            )
+        elif phone:  # a number: it belongs to the named bill, else this chat's last bill
+            await attach_phone(update, context, phone, bill_id)
+        elif bill_parser.wants_print(transcript):  # "ഇതൊന്ന് print ചെയ്യൂ" / "print EB-0013"
+            await print_again(update, context, bill_id)
+        elif bill_id or bill_parser.wants_whatsapp(transcript):  # "send EB-0042 on WhatsApp"
+            await resend_bill(update, context, bill_id)
         elif len(digits) >= 6:  # sounded like a number, but not a valid 10-digit mobile
             await update.message.reply_text(BAD_NUMBER.format(heard=digits))
         else:
             await update.message.reply_text(NOT_UNDERSTOOD.format(heard=transcript) + not_in_list)
         return
     lines, total = store.price_items(items)
-    bill = store.create_bill(lines, total, channel="telegram", transcript=transcript, customer_phone=phone)
+    context.chat_data["pending_draft"] = {  # nothing is billed until ✅ OK is tapped
+        "lines": lines, "total": total, "transcript": transcript, "customer_phone": phone,
+    }
+    log.info("Draft for chat %s: %d items, ₹%.2f", update.effective_chat.id, len(lines), total)
+    await update.message.reply_text(
+        f"{icon} \"{transcript}\"\n\n{draft_text(lines, total)}{not_in_list}\n\n"
+        "ശരിയാണോ? Correct? Tap OK to make the bill.",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("✅ OK — bill it", callback_data="confirm:bill"),
+            InlineKeyboardButton("✋ Cancel", callback_data="discard:bill"),
+        ]]),
+    )
+
+
+def draft_text(lines, total):
+    """The preview the shopkeeper checks before the bill exists."""
+    rows = [f"🧾 {store.SHOP_NAME} — check the items:", ""]
+    for item in lines:
+        unit = store.UNIT_LABEL.get(item["unit"], item["unit"])
+        rows.append(f"• {item['name_en']} × {item['qty']:g} {unit} = ₹{item['line_total']:.2f}")
+    rows.append(f"\nTotal: ₹{total:.2f}")
+    return "\n".join(rows)
+
+
+async def finish_bill(message, context, draft):
+    """The draft was confirmed: now create, print, send the PDF and offer delivery."""
+    bill = store.create_bill(
+        draft["lines"], draft["total"], channel="telegram",
+        transcript=draft["transcript"], customer_phone=draft["customer_phone"],
+    )
     context.chat_data["last_bill_id"] = bill["bill_id"]
     await asyncio.to_thread(printer.print_bill, bill)
-    log.info("Telegram bill %s for ₹%.2f (customer %s)", bill["bill_id"], total, phone or "-")
-
-    message = update.message
-    await message.reply_text(f"{icon} \"{transcript}\"\n\n{store.bill_summary(bill)}{not_in_list}")
+    log.info("Telegram bill %s for ₹%.2f (customer %s)", bill["bill_id"], bill["total"], bill["customer_phone"] or "-")
+    await message.reply_text(store.bill_summary(bill))
     await message.reply_document(
         document=pdf_gen.build_pdf(bill),
         filename=f"EasyBill_{bill['bill_id']}.pdf",
@@ -185,9 +228,38 @@ async def make_bill(update, context, transcript, items, phone, unknown, icon):
     await deliver_to_customer(message, context, bill)
 
 
-async def attach_phone(update, context, phone):
-    """A message with only a phone number: add it to this chat's last bill (or replace the old number)."""
-    bill_id = context.chat_data.get("last_bill_id")
+async def confirm_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    draft = context.chat_data.pop("pending_draft", None)
+    await query.answer()
+    if draft is None:
+        await query.edit_message_text("Nothing to confirm — send the items again.")
+        return
+    await query.edit_message_text(query.message.text + "\n\n✅ Confirmed")
+    await finish_bill(query.message, context, draft)
+
+
+async def discard_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    context.chat_data.pop("pending_draft", None)
+    await query.answer("Cancelled")
+    await query.edit_message_text("✋ Discarded. ബിൽ ഉണ്ടായില്ല.\nSend the items again.")
+
+
+async def confirm_by_message(update, context):
+    """The shopkeeper typed or said "ശരി" / "ok" instead of tapping the button."""
+    draft = context.chat_data.pop("pending_draft", None)
+    if draft is None:
+        await update.message.reply_text("Nothing to confirm. ഒന്നും കാത്തിരിക്കുന്നില്ല.")
+        return
+    await finish_bill(update.message, context, draft)
+
+
+async def attach_phone(update, context, phone, bill_id=None):
+    """A message with a phone number: add it to the named bill, else this chat's last bill
+    (or replace the old number)."""
+    if bill_id is None:
+        bill_id = context.chat_data.get("last_bill_id")
     if bill_id is None:  # e.g. after a server restart: use the newest Telegram bill
         latest = store.latest_bill()
         bill_id = latest["bill_id"] if latest and latest["channel"] == "telegram" else None
@@ -196,8 +268,35 @@ async def attach_phone(update, context, phone):
             f"📲 {store.format_phone(phone)}: ആദ്യം സാധനങ്ങൾ പറയൂ. Send the items first, then the number."
         )
         return
+    if store.get_bill(bill_id) is None:
+        await update.message.reply_text(f"Couldn't find bill {bill_id}. {bill_id} കണ്ടെത്താനായില്ല.")
+        return
     bill = store.set_customer_phone(bill_id, phone)
+    context.chat_data["last_bill_id"] = bill_id
     log.info("Customer %s added to %s", phone, bill_id)
+    await deliver_to_customer(update.message, context, bill)
+
+
+async def resend_bill(update, context, bill_id=None):
+    """"Send it on WhatsApp" with no new number: resend the named/last bill to its saved
+    customer, or ask which number if the bill has none."""
+    if bill_id is None:
+        bill_id = context.chat_data.get("last_bill_id")
+    if bill_id is not None:
+        bill = store.get_bill(bill_id)
+    else:
+        latest = store.latest_bill()
+        bill = latest if latest and latest["channel"] == "telegram" else None
+    if bill is None:
+        await update.message.reply_text("Couldn't find that bill. ആ ബിൽ കണ്ടെത്താനായില്ല.")
+        return
+    if not bill.get("customer_phone"):
+        context.chat_data["last_bill_id"] = bill["bill_id"]
+        await update.message.reply_text(
+            f"{bill['bill_id']}: ആരുടെ നമ്പറിലേക്ക്? Which number?\n"
+            'Say or type it, e.g. "98470 12345".'
+        )
+        return
     await deliver_to_customer(update.message, context, bill)
 
 
@@ -321,8 +420,27 @@ async def cancel_by_message(update, context):
     status = cancel_send(bill_id)
     if status:
         await status.edit_text(CANCELLED.format(bill_id=bill_id))
+    elif context.chat_data.pop("pending_draft", None) is not None:
+        await update.message.reply_text("✋ Discarded. ബിൽ ഉണ്ടായില്ല.")
     else:
         await update.message.reply_text("Nothing to cancel. ഒന്നും അയക്കാനില്ല.")
+
+
+async def print_again(update, context, bill_id=None):
+    """"ഇതൊന്ന് print ചെയ്യൂ" — print the named bill, else this chat's last (or newest) bill."""
+    if bill_id is None:
+        bill_id = context.chat_data.get("last_bill_id")
+    bill = store.get_bill(bill_id) if bill_id is not None else store.latest_bill()
+    if bill is None:
+        await update.message.reply_text("പ്രിന്റ് ചെയ്യാന്‍ ഒരു ബില്ലുമില്ല. No bill to print yet.")
+        return
+    mode, detail = await asyncio.to_thread(printer.print_bill, bill)
+    reply = {
+        "printed": f"🖨️ {bill['bill_id']} sent to {store.PRINTER} (job {detail}). പ്രിന്റ് ആവുകയാണ്.",
+        "preview": f"🖨️ {bill['bill_id']} opened in Preview.",
+        "saved": f"🖨️ {bill['bill_id']} saved (no printer set).",
+    }.get(mode, f"❌ {bill['bill_id']} print failed: {detail}")
+    await update.message.reply_text(reply)
 
 
 async def send_customer_options(message, bill, note=None):
@@ -379,6 +497,8 @@ async def start_bot():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler(["summary", "report"], day_summary_command))
     app.add_handler(CallbackQueryHandler(cancel_button, pattern=r"^cancel:"))
+    app.add_handler(CallbackQueryHandler(confirm_button, pattern=r"^confirm:bill$"))
+    app.add_handler(CallbackQueryHandler(discard_button, pattern=r"^discard:bill$"))
     app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, voice_note))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_message))
     app.add_error_handler(on_error)

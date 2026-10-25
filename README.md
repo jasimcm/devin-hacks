@@ -125,7 +125,17 @@ Set `SHOP_NAME`, `SHOP_ADDRESS`, `SHOP_PHONE` and `UPI_VPA` (the UPI ID that rec
 |---|---|
 | `preview` *(default)* | The 80mm receipt opens in Preview on the Mac. No printer needed. |
 | *(empty)* | Only saved as `backend/printed/EasyBill_EB-0042.pdf` |
-| a printer name | Printed with `lp` (list names with `lpstat -p`) |
+| a printer name | Printed with `lp` (list names with `lpstat -p`, e.g. `HP_Smart_Tank_510_series`) |
+
+`PRINT_PAPER` picks the page layout:
+
+| `PRINT_PAPER=` | What happens |
+|---|---|
+| `a4` *(default)* | The receipt at native 80mm size, centred at the top of an A4 sheet — for inkjet/laser printers. Sent with `lp -o media=A4 -o fit-to-page=false`, so CUPS can't scale it up and the QR stays scannable. |
+| `receipt` | The 80mm-wide page itself — for a thermal printer. |
+
+Check the print queue with `lpstat -o`. The shopkeeper can also reprint by voice or text:
+*"ഇതൊന്ന് print ചെയ്യൂ"* / *"print"* for the last bill, or *"print EB-0013"* for a specific one.
 
 ### 5. Run
 
@@ -149,12 +159,21 @@ Open **http://localhost:8000/counter.html** on the Mac. Press `Ctrl+Cmd+F` for f
 ### 6. Try it
 1. On the shopkeeper's phone, open your bot in Telegram, tap **Start**, and send a voice note:
    *"രണ്ട് കിലോ അരി, ഒരു സോപ്പ്, അര ലിറ്റർ പാൽ"*.
-2. In about 5–10 seconds the bot replies with what it heard, the bill and the PDF. The receipt opens on the Mac,
-   and the counter screen shows the bill with two QR codes.
+2. In about 5–10 seconds the bot replies with what it heard and the parsed bill, with **✅ OK** /
+   **✋ Cancel** buttons. Tap **OK** — or just say *"ശരി"* — to make the bill: it prints, the PDF
+   arrives, and the counter screen shows it with two QR codes. **Cancel** discards it: no bill is made.
 3. The customer scans the **Telegram QR** and taps **Start**. The bot sends them the PDF, and the counter screen
    shows **✅ Bill sent on Telegram**.
 
 You can also type the items to the bot instead of speaking.
+
+**Day-end report:** ask the bot *"ഇന്നത്തെ ആകെ"* or *"sales report"* (voice note, text, or `/summary` on
+Telegram) for today's bill count, total sales and best sellers — text plus a PDF. The same works on
+WhatsApp, and the counter screen can read it from `GET /api/summary`.
+
+**Forgot the number?** Say or type it afterwards, e.g. *"send EB-0042 to whatsapp, number 98470 12345"* —
+the number attaches to that bill and the send countdown starts. *"whatsapp-il ayakkoo"* alone resends the
+last bill to its saved customer.
 
 ### 7. Send the bill to the customer's WhatsApp (optional)
 Say the customer's number at the end of the voice note:
@@ -274,7 +293,9 @@ Interactive API docs: http://localhost:8000/docs
 | Bot doesn't reply at all | Only one copy of the server can poll a bot. Stop any other running copy, including on a teammate's laptop. |
 | "Couldn't process the voice note" | Check `GEMINI_API_KEY` and its daily free limit in AI Studio. Typing the items still works. |
 | Counter QR says "Set BOT_USERNAME" | Set `BOT_USERNAME` without `@`, then restart. |
-| Nothing opens or prints | Use `PRINTER=preview`, or copy the exact name from `lpstat -p`. |
+| Nothing opens or prints | Use `PRINTER=preview`, or copy the exact name from `lpstat -p`. Check the queue with `lpstat -o`. |
+| Bill prints huge or cut off on A4 | `PRINT_PAPER` should be `a4` (default): the job goes out with `-o media=A4` and no fit-to-page, so it can't be scaled up. `receipt` is for 80mm thermal printers only. |
+| Print failed message in Telegram | The reply shows `lp`'s error. Usually the printer name or a stuck job — see `lpstat -o`. |
 | Want a fresh bill counter | Stop the server and delete `backend/bills.json`. |
 
 ## Extra: mic page on an Android phone

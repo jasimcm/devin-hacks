@@ -140,8 +140,8 @@ def shared_pdf(bill_id: str, share_key: str):
 
 @app.post("/api/bills/{bill_id}/print")
 def print_again(bill_id: str):
-    printer.print_bill(find_bill(bill_id))
-    return {"printed": True}
+    mode, detail = printer.print_bill(find_bill(bill_id))  # detail: CUPS job id, or the error
+    return {"printed": mode in ("printed", "preview"), "mode": mode, "detail": detail}
 
 
 @app.get("/api/bills/{bill_id}/pdf")
