@@ -186,6 +186,33 @@ def day_summary_text(day=None):
     return "\n".join(lines)
 
 
+def add_item(entry):
+    """Add a price-list item (or update its price if the id exists) and save inventory.json."""
+    with _lock:
+        item_id = entry["id"]
+        existing = INVENTORY_BY_ID.get(item_id)
+        if existing is not None:  # re-adding an item updates its price
+            existing["price"] = float(entry["price"])
+            existing["unit"] = entry["unit"]
+            item = existing
+        else:
+            item = {
+                "id": item_id,
+                "name_en": entry["name_en"],
+                "name_ml": entry["name_ml"],
+                "unit": entry["unit"],
+                "price": float(entry["price"]),
+                "aliases": entry.get("aliases") or [entry["name_en"], entry["name_ml"]],
+            }
+            INVENTORY.append(item)
+            INVENTORY_BY_ID[item_id] = item
+        tmp = INVENTORY_FILE.with_suffix(".tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(INVENTORY, f, ensure_ascii=False, indent=2)
+        tmp.replace(INVENTORY_FILE)
+        return item, existing is not None
+
+
 def _load_bills():
     if not BILLS_FILE.exists():
         return {}

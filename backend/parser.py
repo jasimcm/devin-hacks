@@ -355,9 +355,9 @@ def is_summary(text):
 
 
 def wants_whatsapp(text):
-    """A short ask to (re)send a bill on WhatsApp: "whatsapp-il ayakkoo", "send it on whatsapp".
+    """An ask to (re)send a bill on WhatsApp: "whatsapp-il ayakkoo", "send it on whatsapp".
     Checked only when no items were found, so "2 kg rice, send on whatsapp" still makes a bill."""
-    return len(text.split()) <= 8 and bool(INSTRUCTION.search(text))
+    return bool(INSTRUCTION.search(text))
 
 
 # "ഇതൊന്ന് print ചെയ്യൂ" / "print the bill" / "EB-0013 print cheyyu" — reprint a bill
@@ -365,8 +365,9 @@ PRINT_WORDS = re.compile(r"\bprint\b|\breprint\b|പ്രിന്റ്|പ്
 
 
 def wants_print(text):
-    """A short ask to print a bill again. Checked only when no items were found."""
-    return len(text.split()) <= 6 and bool(PRINT_WORDS.search(text))
+    """An ask to print a bill again: "ഇതൊന്ന് print ചെയ്യൂ", "ee bill print aki tharo".
+    Checked only when no items were found."""
+    return bool(PRINT_WORDS.search(text))
 
 
 # A bill id said or typed later: "send EB-0042 to WhatsApp" (also "eb 0042", "EB42")
