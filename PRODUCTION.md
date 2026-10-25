@@ -1,4 +1,4 @@
-# Easy Bill — production readiness
+# Kinkaran — production readiness
 
 What it takes to run this beyond the hackathon demo — in a real shop, every day, unattended.
 

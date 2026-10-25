@@ -1,17 +1,23 @@
-# Easy Bill 🧾🎙️
+# Kinkaran 🧾🎙️
 
 **Voice billing for small rural shops in Kerala.**
-Built at the **Devin Hackathon**, JAIN University, Kochi — 24–25 October 2026.
-Track: *Kill the Busywork*.
 
-> **മുതലാളി പറഞ്ഞാ മതി, ബാക്കി കിങ്കരൻ നോക്കിക്കോളും.**
-> *The boss just says it; Kinkaran (@KINKARANBOT) handles the rest.*
+> **മുതലാളി പറഞ്ഞാ മതി, ബാക്കി കിങ്കരൻ നോക്കിക്കോളും.** 💪
+> *The boss just says it — Kinkaran does the rest.*
+
+**കിങ്കരൻ / Kinkaran** — the helper who does the work. The shopkeeper sends a voice note with
+the items, in Malayalam, English or Manglish; Kinkaran builds the bill from the shop's own price
+list, prints it, shows it on the counter screen with a UPI QR, and sends the PDF to the customer
+on Telegram or WhatsApp. No typing, no billing software, no extra staff.
+
+Built at the **Devin Hackathon**, JAIN University, Kochi — 24–25 October 2026.
+Track: *Kill the Busywork*. Code name: **Easy Bill** — the Telegram bot is **@KINKARANBOT**.
 
 ## Project overview
 
-- **Project name:** Easy Bill
+- **Project name:** Kinkaran (code name Easy Bill)
 - **Short description:** A shopkeeper sends a Telegram voice note with the items — in Malayalam,
-  English or Manglish (*"രണ്ട് കിലോ അരി, ഒരു സോപ്പ്, അര ലിറ്റർ പാൽ"*). Easy Bill builds the bill
+  English or Manglish (*"രണ്ട് കിലോ അരി, ഒരു സോപ്പ്, അര ലിറ്റർ പാൽ"*). Kinkaran builds the bill
   using the shop's own price list, shows it on a counter screen with a UPI QR, and sends the bill
   as a PDF back on Telegram or WhatsApp. No typing, no billing software, no printer needed.
 - **Team:** Jasim CM ([@jasimcm](https://github.com/jasimcm)) — add teammates here
